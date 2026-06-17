@@ -1,0 +1,86 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:ital,wght@0,400;0,700;1,400&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --studio-dark: #0a0a0f;
+  --studio-panel: #111118;
+  --studio-card: #16161f;
+  --studio-border: #252535;
+  --studio-accent: #e8b84b;
+  --studio-red: #cc2936;
+  --studio-blue: #1a6bff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background: var(--studio-dark);
+  color: #e8e8f0;
+  font-family: 'Inter', system-ui, sans-serif;
+  margin: 0;
+  padding: 0;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--studio-panel); }
+::-webkit-scrollbar-thumb { background: var(--studio-border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #353550; }
+
+/* Recording pulse ring */
+.rec-ring {
+  box-shadow: 0 0 0 0 rgba(204, 41, 54, 0.7);
+  animation: recPulse 1.2s infinite;
+}
+@keyframes recPulse {
+  0% { box-shadow: 0 0 0 0 rgba(204, 41, 54, 0.7); }
+  70% { box-shadow: 0 0 0 14px rgba(204, 41, 54, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(204, 41, 54, 0); }
+}
+
+/* Avatar glow when speaking */
+.avatar-speaking {
+  box-shadow: 0 0 0 3px rgba(232, 184, 75, 0.6), 0 0 30px rgba(232, 184, 75, 0.25);
+  animation: speakGlow 0.8s ease-in-out infinite alternate;
+}
+@keyframes speakGlow {
+  from { box-shadow: 0 0 0 3px rgba(232, 184, 75, 0.6), 0 0 20px rgba(232, 184, 75, 0.2); }
+  to   { box-shadow: 0 0 0 5px rgba(232, 184, 75, 0.9), 0 0 50px rgba(232, 184, 75, 0.4); }
+}
+
+/* Breaking news ticker */
+@keyframes ticker {
+  0%   { transform: translateX(100%); }
+  100% { transform: translateX(-100%); }
+}
+.ticker-inner { animation: ticker 28s linear infinite; }
+
+/* Waveform bars */
+.wave-bar {
+  animation: waveBounce var(--d, 0.8s) ease-in-out infinite alternate;
+}
+@keyframes waveBounce {
+  from { transform: scaleY(0.2); }
+  to   { transform: scaleY(1); }
+}
+
+/* CRT scanline overlay */
+.crt::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0,0,0,0.08) 2px,
+    rgba(0,0,0,0.08) 4px
+  );
+  pointer-events: none;
+  z-index: 10;
+}
