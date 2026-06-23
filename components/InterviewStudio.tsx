@@ -661,7 +661,7 @@ export default function InterviewStudio({
       </div>
 
       {/* ── BROADCAST VIDEO PANELS ── */}
-      <div className="flex flex-1 min-h-0">
+      <div className="flex flex-col md:flex-row flex-1 min-h-0 overflow-hidden">
 
         {/* LEFT — Journalist */}
         <div className="flex-1 relative bg-black overflow-hidden">
