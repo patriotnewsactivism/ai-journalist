@@ -17,7 +17,7 @@ export async function generateJournalistResponse(prompt: string): Promise<string
           temperature: 0.85,
           topK: 40,
           topP: 0.92,
-          maxOutputTokens: 350,
+          maxOutputTokens: 800,
           stopSequences: ["Interviewee:"],
         },
         safetySettings: [
@@ -47,10 +47,21 @@ export async function extractStoryContext(documentText: string, storyTitle: stri
 Story Title: ${storyTitle}
 
 Source Documents:
-${documentText.slice(0, 8000)}
+${documentText.slice(0, 30000)}
 
-Extract and organize the key facts, allegations, key players, dates, locations, and most important claims from these documents. 
-Format as a concise journalist briefing — bullet points, organized by theme. Max 600 words. Focus on what will generate the best interview questions.`;
+You are a senior investigative journalist's research director preparing a briefing before a live recorded interview.
+
+Extract and organize the following from the documents:
+- Named individuals (full names, titles, roles, organizations)
+- Key dates and timeline of events
+- Specific allegations, incidents, and violations (include case numbers, statute references if present)
+- Causal chains: what led to what, who knew what and when
+- Contradictions, gaps, or inconsistencies in the record
+- Legal citations, court filings, agency findings
+- Direct quotes that are most newsworthy or damning
+- Suggested angles and follow-up threads a journalist should press on
+
+Format as a tight journalist briefing with clear headers. Preserve specificity — names, dates, numbers matter. Flag the top 3 most explosive or legally significant facts. Max 800 words.`;
 
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,

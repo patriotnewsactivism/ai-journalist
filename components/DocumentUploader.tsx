@@ -14,10 +14,12 @@ export default function DocumentUploader({ onContextReady, storyTitle, onTitleCh
   const [extracting, setExtracting] = useState(false);
   const [extracted, setExtracted] = useState(false);
   const [rawText, setRawText] = useState("");
+  const [extractError, setExtractError] = useState("");
 
   const onDrop = useCallback((accepted: File[]) => {
     setFiles(prev => [...prev, ...accepted]);
     setExtracted(false);
+    setExtractError("");
   }, []);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -31,33 +33,37 @@ export default function DocumentUploader({ onContextReady, storyTitle, onTitleCh
     multiple: true,
   });
 
-  const readFiles = async () => {
-    let combined = "";
-    for (const file of files) {
-      const text = await file.text();
-      combined += `\n\n=== ${file.name} ===\n${text}`;
-    }
-    return combined;
-  };
-
   const handleExtract = async () => {
     setExtracting(true);
+    setExtractError("");
     try {
-      const text = files.length > 0 ? await readFiles() : rawText;
+      const formData = new FormData();
+      formData.append("storyTitle", storyTitle);
+
+      if (files.length > 0) {
+        for (const file of files) {
+          formData.append("documents", file, file.name);
+        }
+      } else if (rawText.trim()) {
+        formData.append("documentText", rawText);
+      }
 
       const res = await fetch("/api/interview/extract-context", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ documentText: text, storyTitle }),
+        body: formData,
       });
 
       const data = await res.json();
+      if (!res.ok) {
+        setExtractError(data.error || "Failed to analyze documents.");
+        return;
+      }
       if (data.context) {
         onContextReady(data.context, storyTitle);
         setExtracted(true);
       }
-    } catch (err) {
-      console.error("Extract error:", err);
+    } catch (err: any) {
+      setExtractError(err.message || "Network error.");
     } finally {
       setExtracting(false);
     }
@@ -98,7 +104,7 @@ export default function DocumentUploader({ onContextReady, storyTitle, onTitleCh
         <p className="text-sm text-studio-muted">
           {isDragActive ? "Drop files here..." : "Drop documents here, or click to browse"}
         </p>
-        <p className="text-xs text-studio-muted/60 mt-1">.txt, .pdf, .doc, .docx supported</p>
+        <p className="text-xs text-studio-muted/60 mt-1">.pdf, .txt, .doc, .docx — extracted server-side</p>
       </div>
 
       {/* File list */}
@@ -131,6 +137,10 @@ export default function DocumentUploader({ onContextReady, storyTitle, onTitleCh
             className="w-full bg-studio-dark border border-studio-border rounded-lg px-4 py-2.5 text-sm text-white placeholder:text-studio-muted focus:outline-none focus:border-studio-accent resize-none"
           />
         </div>
+      )}
+
+      {extractError && (
+        <p className="text-xs text-red-400">{extractError}</p>
       )}
 
       {/* Extract button */}

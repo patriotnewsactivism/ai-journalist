@@ -24,6 +24,7 @@ export interface VideoJournalistHandle {
   connect: () => Promise<void>;
   disconnect: () => void;
   isReady: boolean;
+  getSrcObject: () => MediaStream | null;
 }
 
 interface Props {
@@ -139,6 +140,7 @@ const VideoJournalist = forwardRef<VideoJournalistHandle, Props>(
       connect,
       disconnect,
       isReady: connectionState === "connected",
+      getSrcObject: () => srcObjectRef.current,
     }));
 
     return (
