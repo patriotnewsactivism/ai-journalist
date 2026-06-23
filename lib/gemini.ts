@@ -41,7 +41,7 @@ export async function generateJournalistResponse(prompt: string): Promise<string
   );
 }
 
-export async function extractStoryContext(rawText: string): Promise<string> {
+export async function extractStoryContext(rawText: string, storyTitle?: string): Promise<string> {
   return groqChat(
     "You are a research assistant for an investigative journalist. Extract and summarize the key facts, people, events, and allegations from the provided documents into a clear, structured briefing.",
     "Extract the key story context from this document:\n\n" + rawText,
