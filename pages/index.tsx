@@ -221,21 +221,7 @@ export default function Home() {
 
                   {/* Document uploader */}
                   <div className="mb-4">
-                    <DocumentUploader onContextReady={handleContextReady} />
-                  </div>
-
-                  {/* Story title */}
-                  <div className="mb-5">
-                    <label className="block text-xs font-semibold text-studio-muted uppercase tracking-wide mb-1.5">
-                      Story Title <span className="text-studio-muted/50 font-normal normal-case">(optional)</span>
-                    </label>
-                    <input
-                      type="text"
-                      value={storyTitle}
-                      onChange={e => setStoryTitle(e.target.value)}
-                      placeholder="e.g. Civil rights violation in Harris County"
-                      className="w-full bg-studio-card border border-studio-border rounded-xl px-4 py-3 text-sm text-white placeholder-studio-muted/50 focus:outline-none focus:border-studio-red/60 transition-colors"
-                    />
+                    <DocumentUploader onContextReady={handleContextReady} storyTitle={storyTitle} onTitleChange={setStoryTitle} />
                   </div>
 
                   {/* Start button */}
