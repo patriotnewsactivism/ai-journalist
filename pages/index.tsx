@@ -259,7 +259,7 @@ export default function Home() {
           ═══════════════════════════════════════════════════ */}
           {stage === "summary" && (
             <InterviewSummary
-              journalist={selectedJournalist}
+              journalistId={selectedJournalist.id}
               storyTitle={storyTitle}
               transcript={finalTranscript}
               onRestart={handleRestart}
