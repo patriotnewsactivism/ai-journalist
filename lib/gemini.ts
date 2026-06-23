@@ -1,20 +1,20 @@
 // ─────────────────────────────────────────────
-//  OpenAI GPT-4o — Interview Brain
-//  (Replaced Gemini 2.5 Flash — same function signatures)
+//  Groq (llama-3.3-70b) — Interview Brain
+//  Replaces Gemini — same function signatures
 // ─────────────────────────────────────────────
 
-async function openAIChat(systemPrompt: string, userPrompt: string, maxTokens = 800): Promise<string> {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error("OPENAI_API_KEY not set");
+async function groqChat(systemPrompt: string, userPrompt: string, maxTokens = 800): Promise<string> {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) throw new Error("GROQ_API_KEY not set");
 
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "Authorization": ,
+      "Authorization": "Bearer " + apiKey,
     },
     body: JSON.stringify({
-      model: "gpt-4o",
+      model: "llama-3.3-70b-versatile",
       temperature: 0.85,
       max_tokens: maxTokens,
       messages: [
@@ -26,7 +26,7 @@ async function openAIChat(systemPrompt: string, userPrompt: string, maxTokens = 
 
   if (!res.ok) {
     const err = await res.text();
-    throw new Error();
+    throw new Error("Groq error " + res.status + ": " + err);
   }
 
   const data = await res.json();
@@ -34,7 +34,7 @@ async function openAIChat(systemPrompt: string, userPrompt: string, maxTokens = 
 }
 
 export async function generateJournalistResponse(prompt: string): Promise<string> {
-  return openAIChat(
+  return groqChat(
     "You are a sharp, professional investigative journalist conducting a real interview. Ask incisive, targeted questions. Be direct and persistent. Keep responses concise — one question at a time.",
     prompt,
     800
@@ -42,9 +42,9 @@ export async function generateJournalistResponse(prompt: string): Promise<string
 }
 
 export async function extractStoryContext(rawText: string): Promise<string> {
-  return openAIChat(
+  return groqChat(
     "You are a research assistant for an investigative journalist. Extract and summarize the key facts, people, events, and allegations from the provided documents into a clear, structured briefing.",
-    ,
+    "Extract the key story context from this document:\n\n" + rawText,
     1200
   );
 }
@@ -54,9 +54,9 @@ export async function generateInterviewSummary(
   storyTitle: string,
   journalistName: string
 ): Promise<string> {
-  return openAIChat(
-    ,
-    ,
+  return groqChat(
+    journalistName + " is a professional investigative journalist. Write a concise, compelling post-interview summary suitable for publication.",
+    "Story: " + storyTitle + "\n\nInterview transcript:\n" + transcript + "\n\nWrite a structured summary with key findings, quotes, and next steps.",
     1200
   );
 }
