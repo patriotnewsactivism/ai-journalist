@@ -35,6 +35,7 @@ export function useSessionRecorder(): SessionRecorderHandle {
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const blobRef = useRef<Blob | null>(null);
+  const mimeRef = useRef<string>("audio/mp4");
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const destRef = useRef<MediaStreamAudioDestinationNode | null>(null);
@@ -66,18 +67,21 @@ export function useSessionRecorder(): SessionRecorderHandle {
 
         chunksRef.current = [];
 
-        const recorder = new MediaRecorder(dest.stream, {
-          mimeType: MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-            ? "audio/webm;codecs=opus"
-            : "audio/webm",
-        });
+        const mime = typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported("audio/mp4")
+          ? "audio/mp4"
+          : MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+          ? "audio/webm;codecs=opus"
+          : "audio/webm";
+        mimeRef.current = mime;
+
+        const recorder = new MediaRecorder(dest.stream, { mimeType: mime });
 
         recorder.ondataavailable = (e) => {
           if (e.data.size > 0) chunksRef.current.push(e.data);
         };
 
         recorder.onstop = () => {
-          blobRef.current = new Blob(chunksRef.current, { type: "audio/webm" });
+          blobRef.current = new Blob(chunksRef.current, { type: mime });
           setRecordingState("stopped");
           if (timerRef.current) clearInterval(timerRef.current);
         };
@@ -107,10 +111,11 @@ export function useSessionRecorder(): SessionRecorderHandle {
 
   const downloadRecording = useCallback((filename: string) => {
     if (!blobRef.current) return;
+    const ext = mimeRef.current.includes("mp4") ? "mp4" : "webm";
     const url = URL.createObjectURL(blobRef.current);
     const a = document.createElement("a");
     a.href = url;
-    a.download = filename.endsWith(".webm") ? filename : `${filename}.webm`;
+    a.download = filename.endsWith(`.${ext}`) ? filename : `${filename}.${ext}`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);

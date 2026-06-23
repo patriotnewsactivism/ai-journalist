@@ -30,20 +30,24 @@ const VAD_SILENCE_MS = 1800;
 const VAD_SPEECH_THRESHOLD = 14;
 
 function getSupportedAudioMime(): string {
-  if (typeof MediaRecorder === "undefined") return "audio/webm";
+  if (typeof MediaRecorder === "undefined") return "audio/mp4";
+  if (MediaRecorder.isTypeSupported("audio/mp4")) return "audio/mp4";
   if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) return "audio/webm;codecs=opus";
   if (MediaRecorder.isTypeSupported("audio/webm")) return "audio/webm";
-  if (MediaRecorder.isTypeSupported("audio/mp4")) return "audio/mp4";
-  return "audio/webm";
+  return "audio/mp4";
 }
 
 function getSupportedVideoMime(): string {
-  if (typeof MediaRecorder === "undefined") return "video/webm";
+  if (typeof MediaRecorder === "undefined") return "video/mp4";
+  if (MediaRecorder.isTypeSupported("video/mp4")) return "video/mp4";
   if (MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")) return "video/webm;codecs=vp9,opus";
   if (MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus")) return "video/webm;codecs=vp8,opus";
   if (MediaRecorder.isTypeSupported("video/webm")) return "video/webm";
-  if (MediaRecorder.isTypeSupported("video/mp4")) return "video/mp4";
-  return "video/webm";
+  return "video/mp4";
+}
+
+function mimeToExt(mime: string): string {
+  return mime.includes("mp4") ? "mp4" : "webm";
 }
 
 export default function InterviewStudio({
@@ -57,7 +61,7 @@ export default function InterviewStudio({
   const [isProcessing, setIsProcessing] = useState(false);
   const [ttsEnabled, setTtsEnabled] = useState(true);
   const [sessionTime, setSessionTime] = useState(0);
-  const [micMode, setMicMode] = useState<MicMode>("push-to-talk");
+  const [micMode, setMicMode] = useState<MicMode>("hands-free");
   const [handsFreeActive, setHandsFreeActive] = useState(false);
   const [vadState, setVadState] = useState<"waiting" | "user-speaking" | "silence">("waiting");
   const [vadLevel, setVadLevel] = useState(0);
@@ -259,6 +263,10 @@ export default function InterviewStudio({
     }
     await askJournalist(true);
     setPhase("active");
+    // Auto-start session recording and hands-free listening
+    setSessionRecording(true);
+    startJournalistAudioRecording();
+    await startHandsFree(true);
   };
 
   // ─── Submit audio blob to Deepgram ────────────────────────────
@@ -331,7 +339,7 @@ export default function InterviewStudio({
   };
 
   // ─── Hands-free VAD ──────────────────────────────────────────
-  const startHandsFree = async () => {
+  const startHandsFree = async (autoRecord = false) => {
     const mime = getSupportedAudioMime();
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -344,7 +352,7 @@ export default function InterviewStudio({
       analyser.smoothingTimeConstant = 0.4;
       source.connect(analyser);
       hfAnalyser.current = analyser;
-      if (sessionRecording && sessionRecorder.recordingState === "idle") {
+      if ((autoRecord || sessionRecording) && sessionRecorder.recordingState === "idle") {
         sessionRecorder.startSession(stream, audioRef.current);
       }
       hfVadActive.current = true;
@@ -496,7 +504,7 @@ export default function InterviewStudio({
     const url = URL.createObjectURL(userVideoBlob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `wtpn-you-${storyTitle.slice(0, 20).replace(/\s+/g, "-")}-${Date.now()}.webm`;
+    a.download = `wtpn-you-${storyTitle.slice(0, 20).replace(/\s+/g, "-")}-${Date.now()}.${mimeToExt(userVideoBlob.type)}`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -530,7 +538,7 @@ export default function InterviewStudio({
     const url = URL.createObjectURL(journalistAudioBlob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `wtpn-${journalist.name.replace(/\s+/g, "-")}-audio-${Date.now()}.webm`;
+    a.download = `wtpn-${journalist.name.replace(/\s+/g, "-")}-audio-${Date.now()}.${mimeToExt(journalistAudioBlob.type)}`;
     a.click();
     URL.revokeObjectURL(url);
   };
