@@ -26,8 +26,9 @@ interface Props {
 type Phase = "ready" | "opening" | "active" | "ended";
 type MicMode = "push-to-talk" | "hands-free";
 
-const VAD_SILENCE_MS = 1800;
-const VAD_SPEECH_THRESHOLD = 14;
+const VAD_SILENCE_MS = 2800;
+const VAD_SPEECH_THRESHOLD = 10;
+const VAD_RESUME_DELAY_MS = 600; // cooldown after journalist stops speaking
 
 function getSupportedAudioMime(): string {
   if (typeof MediaRecorder === "undefined") return "audio/mp4";
@@ -457,7 +458,8 @@ export default function InterviewStudio({
   useEffect(() => {
     if (handsFreeActive && !isJournalistSpeaking && !isProcessing) {
       if (hfVadLoop.current) cancelAnimationFrame(hfVadLoop.current);
-      runVAD();
+      const t = setTimeout(runVAD, VAD_RESUME_DELAY_MS);
+      return () => clearTimeout(t);
     }
   }, [history, handsFreeActive, isJournalistSpeaking, isProcessing, runVAD]);
 
