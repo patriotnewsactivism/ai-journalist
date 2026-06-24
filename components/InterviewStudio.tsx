@@ -1,5 +1,5 @@
 "use client";
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import dynamic from "next/dynamic";
 import {
   Mic, Square, Download, Volume2, VolumeX,
@@ -7,7 +7,7 @@ import {
   CircleDot, StopCircle, Video, VideoOff,
   ChevronDown, ChevronUp, Camera, CameraOff, Radio
 } from "lucide-react";
-import { JournalistProfile, Message } from "@/agents/journalist";
+import { JournalistProfile, Message, EmotionalState } from "@/agents/journalist";
 import JournalistAvatar from "./JournalistAvatar";
 import { useSessionRecorder } from "@/hooks/useSessionRecorder";
 import type { VideoJournalistHandle } from "./VideoJournalist";
@@ -28,7 +28,9 @@ type MicMode = "push-to-talk" | "hands-free";
 
 const VAD_SILENCE_MS = 2800;
 const VAD_SPEECH_THRESHOLD = 10;
-const VAD_RESUME_DELAY_MS = 600; // cooldown after journalist stops speaking
+const VAD_RESUME_DELAY_MS = 600;
+const INTERRUPT_THRESHOLD = 38; // RMS*100 needed to interrupt journalist mid-speech
+const MIN_SPEAK_BEFORE_INTERRUPT_MS = 1500; // journalist must speak ≥1.5s before interruptible
 
 function getSupportedAudioMime(): string {
   if (typeof MediaRecorder === "undefined") return "audio/mp4";
@@ -49,6 +51,27 @@ function getSupportedVideoMime(): string {
 
 function mimeToExt(mime: string): string {
   return mime.includes("mp4") ? "mp4" : "webm";
+}
+
+// Split journalist text into sentence-level chunks for pipelined TTS
+function splitIntoSentences(text: string): string[] {
+  const protected_ = text.replace(
+    /\b(Dr|Mr|Mrs|Ms|Prof|Sr|Jr|vs|etc|No|Fig|Lt|Sgt|Det)\./gi,
+    m => m.replace(".", "§")
+  );
+  return protected_
+    .split(/(?<=[.!?])\s+(?=[A-Z"'])/)
+    .map(s => s.replace(/§/g, ".").trim())
+    .filter(s => s.length >= 8);
+}
+
+// Derive emotional tone from story content for dynamic prompt injection + visual cues
+function deriveEmotionalState(context: string, title: string): EmotionalState {
+  const text = (context + " " + title).toLowerCase();
+  if (/kill|murder|death|dead|fatal|shot|shoot|threat|danger/i.test(text)) return "urgent";
+  if (/abuse|victim|suffer|pain|trauma|harass|assault|grief/i.test(text)) return "empathetic";
+  if (/fraud|corrupt|cover.?up|conspir|lie|false|discrepan|hidden|concealed/i.test(text)) return "investigative";
+  return "neutral";
 }
 
 export default function InterviewStudio({
@@ -72,6 +95,13 @@ export default function InterviewStudio({
   const [didReady, setDidReady] = useState(false);
   const [transcriptOpen, setTranscriptOpen] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [wasInterrupted, setWasInterrupted] = useState(false);
+
+  // Emotional state — derived from story content, stable for session
+  const emotionalState = useMemo<EmotionalState>(
+    () => deriveEmotionalState(storyContext, storyTitle),
+    [storyContext, storyTitle]
+  );
 
   // Recording state
   const sessionRecorder = useSessionRecorder();
@@ -109,13 +139,23 @@ export default function InterviewStudio({
   const journalistAudioRecorder = useRef<MediaRecorder | null>(null);
   const journalistAudioChunks = useRef<Blob[]>([]);
 
+  // Interrupt tracking
+  const interruptedRef = useRef(false); // true while mid-interrupt sequence
+  const journalistSpeakStartRef = useRef(0); // when current speech chunk started
+
+  // Ambient audio refs
+  const ambientCtxRef = useRef<AudioContext | null>(null);
+  const ambientSourceRef = useRef<AudioBufferSourceNode | null>(null);
+
   // Sync refs for use in callbacks
   const isJournalistSpeakingRef = useRef(false);
   const isProcessingRef = useRef(false);
   const historyRef = useRef<Message[]>([]);
+  const wasInterruptedRef = useRef(false);
   useEffect(() => { isJournalistSpeakingRef.current = isJournalistSpeaking; }, [isJournalistSpeaking]);
   useEffect(() => { isProcessingRef.current = isProcessing; }, [isProcessing]);
   useEffect(() => { historyRef.current = history; }, [history]);
+  useEffect(() => { wasInterruptedRef.current = wasInterrupted; }, [wasInterrupted]);
 
   // Timer
   useEffect(() => {
@@ -148,16 +188,76 @@ export default function InterviewStudio({
 
   const hasDID = !!(didClientKey && didAgentId);
 
-  // ─── TTS playback ────────────────────────────────────────────
-  const playAudio = async (base64: string): Promise<void> => {
-    if (!base64) return;
+  // ─── Ambient newsroom audio ───────────────────────────────────
+  const startAmbientAudio = useCallback(() => {
+    try {
+      const ctx = new AudioContext();
+      ambientCtxRef.current = ctx;
+
+      // Generate brown noise buffer for subtle room tone
+      const bufferSize = 4 * ctx.sampleRate;
+      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      let lastOut = 0;
+      for (let i = 0; i < bufferSize; i++) {
+        const white = Math.random() * 2 - 1;
+        data[i] = (lastOut + 0.02 * white) / 1.02;
+        lastOut = data[i];
+        data[i] *= 3.5;
+      }
+
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.loop = true;
+      ambientSourceRef.current = source;
+
+      const gain = ctx.createGain();
+      gain.gain.value = 0.022;
+
+      const filter = ctx.createBiquadFilter();
+      filter.type = "lowpass";
+      filter.frequency.value = 320;
+
+      source.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+      source.start();
+    } catch {
+      // Ambient audio is a nice-to-have — fail silently
+    }
+  }, []);
+
+  const stopAmbientAudio = useCallback(() => {
+    try { ambientSourceRef.current?.stop(); } catch {}
+    ambientCtxRef.current?.close();
+    ambientCtxRef.current = null;
+    ambientSourceRef.current = null;
+  }, []);
+
+  // ─── Interrupt handler ────────────────────────────────────────
+  const handleInterrupt = useCallback(() => {
+    if (interruptedRef.current) return;
+    interruptedRef.current = true;
+
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+    }
+    isJournalistSpeakingRef.current = false;
+    setIsJournalistSpeaking(false);
+    setWasInterrupted(true);
+
+    // Release lock after brief delay so VAD can pick up user speech
+    setTimeout(() => { interruptedRef.current = false; }, 800);
+  }, []);
+
+  // ─── Sentence-pipelined TTS playback ─────────────────────────
+  const playAudioChunk = useCallback((base64: string): Promise<void> => {
     return new Promise((resolve) => {
       try {
         const audio = new Audio(`data:audio/mp3;base64,${base64}`);
         audioRef.current = audio;
-        setIsJournalistSpeaking(true);
 
-        // Pipe audio into journalist track recorder if active
         if (journalistAudioCtx.current && journalistAudioDest.current) {
           try {
             const elSrc = journalistAudioCtx.current.createMediaElementSource(audio);
@@ -166,19 +266,84 @@ export default function InterviewStudio({
           } catch { /* already connected */ }
         }
 
-        audio.onended = () => { setIsJournalistSpeaking(false); resolve(); };
-        audio.onerror = () => { setIsJournalistSpeaking(false); resolve(); };
-        audio.play().catch(() => { setIsJournalistSpeaking(false); resolve(); });
+        audio.onended = () => resolve();
+        audio.onerror = () => resolve();
+        audio.play().catch(() => resolve());
       } catch {
-        setIsJournalistSpeaking(false);
         resolve();
       }
     });
-  };
+  }, []);
+
+  const playAudioPipelined = useCallback(async (text: string, voiceId: string): Promise<void> => {
+    if (!text) return;
+    const sentences = splitIntoSentences(text);
+    const chunks = sentences.length > 0 ? sentences : [text];
+
+    // Fire all TTS requests immediately in parallel for minimum latency
+    const audioPromises = chunks.map(sentence =>
+      fetch("/api/interview/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: sentence, voiceId }),
+      })
+        .then(r => r.json())
+        .then(d => d.audioBase64 as string)
+        .catch(() => "")
+    );
+
+    journalistSpeakStartRef.current = Date.now();
+    interruptedRef.current = false;
+    setIsJournalistSpeaking(true);
+    isJournalistSpeakingRef.current = true;
+
+    for (let i = 0; i < audioPromises.length; i++) {
+      if (interruptedRef.current) break;
+      const base64 = await audioPromises[i];
+      if (!base64 || interruptedRef.current) break;
+      await playAudioChunk(base64);
+    }
+
+    if (!interruptedRef.current) {
+      setIsJournalistSpeaking(false);
+      isJournalistSpeakingRef.current = false;
+    }
+  }, [playAudioChunk]);
+
+  // Legacy single-chunk playback (D-ID fallback only)
+  const playAudio = useCallback(async (base64: string): Promise<void> => {
+    if (!base64) return;
+    return new Promise((resolve) => {
+      try {
+        const audio = new Audio(`data:audio/mp3;base64,${base64}`);
+        audioRef.current = audio;
+        setIsJournalistSpeaking(true);
+        isJournalistSpeakingRef.current = true;
+
+        if (journalistAudioCtx.current && journalistAudioDest.current) {
+          try {
+            const elSrc = journalistAudioCtx.current.createMediaElementSource(audio);
+            elSrc.connect(journalistAudioDest.current);
+            elSrc.connect(journalistAudioCtx.current.destination);
+          } catch { /* already connected */ }
+        }
+
+        audio.onended = () => { setIsJournalistSpeaking(false); isJournalistSpeakingRef.current = false; resolve(); };
+        audio.onerror = () => { setIsJournalistSpeaking(false); isJournalistSpeakingRef.current = false; resolve(); };
+        audio.play().catch(() => { setIsJournalistSpeaking(false); isJournalistSpeakingRef.current = false; resolve(); });
+      } catch {
+        setIsJournalistSpeaking(false);
+        isJournalistSpeakingRef.current = false;
+        resolve();
+      }
+    });
+  }, []);
 
   // ─── Journalist response (with existing history) ──────────────
   const askJournalistWithHistory = useCallback(async (fullHistory: Message[]) => {
     setIsProcessing(true);
+    const interrupted = wasInterruptedRef.current;
+    setWasInterrupted(false);
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 30000);
@@ -189,7 +354,9 @@ export default function InterviewStudio({
         body: JSON.stringify({
           journalistId: journalist.id, storyTitle, storyContext,
           history: fullHistory, isOpening: false,
-          ttsEnabled: ttsEnabled || videoMode === "video",
+          ttsEnabled: videoMode === "video", // only need server TTS for D-ID
+          emotionalState,
+          wasInterrupted: interrupted,
         }),
       });
       clearTimeout(timeout);
@@ -200,12 +367,15 @@ export default function InterviewStudio({
       setHistory(prev => [...prev, msg]);
 
       if (videoMode === "video" && didReady && didRef.current) {
+        journalistSpeakStartRef.current = Date.now();
         setIsJournalistSpeaking(true);
+        isJournalistSpeakingRef.current = true;
         try { await didRef.current.speak(data.text); }
         catch { if (data.audioBase64) await playAudio(data.audioBase64); }
         setIsJournalistSpeaking(false);
-      } else if (ttsEnabled && data.audioBase64) {
-        await playAudio(data.audioBase64);
+        isJournalistSpeakingRef.current = false;
+      } else if (ttsEnabled) {
+        await playAudioPipelined(data.text, journalist.voiceId);
       }
     } catch (err: any) {
       setError(err.name === "AbortError"
@@ -214,12 +384,14 @@ export default function InterviewStudio({
     } finally {
       setIsProcessing(false);
     }
-  }, [journalist.id, storyTitle, storyContext, ttsEnabled, videoMode, didReady]);
+  }, [journalist.id, storyTitle, storyContext, ttsEnabled, videoMode, didReady, emotionalState, playAudio, playAudioPipelined]);
 
   // ─── Journalist response (uses current history state) ─────────
   const askJournalist = useCallback(async (isOpening = false) => {
     setIsProcessing(true);
     setError(null);
+    const interrupted = wasInterruptedRef.current;
+    if (!isOpening) setWasInterrupted(false);
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 30000);
@@ -230,7 +402,9 @@ export default function InterviewStudio({
         body: JSON.stringify({
           journalistId: journalist.id, storyTitle, storyContext,
           history, isOpening,
-          ttsEnabled: ttsEnabled || videoMode === "video",
+          ttsEnabled: videoMode === "video",
+          emotionalState,
+          wasInterrupted: isOpening ? false : interrupted,
         }),
       });
       clearTimeout(timeout);
@@ -241,12 +415,15 @@ export default function InterviewStudio({
       setHistory(prev => [...prev, msg]);
 
       if (videoMode === "video" && didReady && didRef.current) {
+        journalistSpeakStartRef.current = Date.now();
         setIsJournalistSpeaking(true);
+        isJournalistSpeakingRef.current = true;
         try { await didRef.current.speak(data.text); }
         catch { if (data.audioBase64) await playAudio(data.audioBase64); }
         setIsJournalistSpeaking(false);
-      } else if (ttsEnabled && data.audioBase64) {
-        await playAudio(data.audioBase64);
+        isJournalistSpeakingRef.current = false;
+      } else if (ttsEnabled) {
+        await playAudioPipelined(data.text, journalist.voiceId);
       }
     } catch (err: any) {
       setError(err.name === "AbortError"
@@ -255,18 +432,20 @@ export default function InterviewStudio({
     } finally {
       setIsProcessing(false);
     }
-  }, [journalist.id, storyTitle, storyContext, history, ttsEnabled, videoMode, didReady]);
+  }, [journalist.id, storyTitle, storyContext, history, ttsEnabled, videoMode, didReady, emotionalState, playAudio, playAudioPipelined]);
 
   const startInterview = async () => {
     setPhase("opening");
     if (videoMode === "video" && hasDID && didRef.current && !didReady) {
       try { await didRef.current.connect(); } catch { /* handled via onError */ }
     }
+    // Start journalist audio recorder before the opening so it captures the first question
+    startJournalistAudioRecording();
     await askJournalist(true);
     setPhase("active");
-    // Auto-start session recording and hands-free listening
+    // Auto-start recording and hands-free listening
     setSessionRecording(true);
-    startJournalistAudioRecording();
+    startAmbientAudio();
     await startHandsFree(true);
   };
 
@@ -408,14 +587,25 @@ export default function InterviewStudio({
       setVadLevel(Math.min(100, rms * 3));
       const isSpeaking = rms > VAD_SPEECH_THRESHOLD;
 
-      if (isJournalistSpeakingRef.current || isProcessingRef.current) {
+      if (isJournalistSpeakingRef.current) {
+        // Check for user interrupt even while journalist is speaking
+        if (!interruptedRef.current && !isProcessingRef.current) {
+          const speakDuration = Date.now() - journalistSpeakStartRef.current;
+          if (rms > INTERRUPT_THRESHOLD && speakDuration > MIN_SPEAK_BEFORE_INTERRUPT_MS) {
+            handleInterrupt();
+          }
+        }
+        hfVadLoop.current = requestAnimationFrame(tick);
+        return;
+      }
+
+      if (isProcessingRef.current) {
         hfVadLoop.current = requestAnimationFrame(tick);
         return;
       }
 
       if (isSpeaking) {
         if (hfSilenceTimer.current) { clearTimeout(hfSilenceTimer.current); hfSilenceTimer.current = null; }
-        // Start recording immediately — no delay
         if (!hfRecorder.current && hfStream.current) {
           hfRecordStartTime.current = Date.now();
           const recorder = new MediaRecorder(hfStream.current, { mimeType: mime });
@@ -429,7 +619,7 @@ export default function InterviewStudio({
             const duration = Date.now() - (hfRecordStartTime.current || 0);
             hfRecordStartTime.current = null;
             const blob = new Blob(hfChunks.current, { type: mime });
-            if (duration < 400 || blob.size < 1500) return; // discard noise
+            if (duration < 400 || blob.size < 1500) return;
             setIsProcessing(true);
             await submitAudio(blob, mime, capturedHistory);
             setIsProcessing(false);
@@ -453,7 +643,7 @@ export default function InterviewStudio({
       hfVadLoop.current = requestAnimationFrame(tick);
     };
     hfVadLoop.current = requestAnimationFrame(tick);
-  }, [submitAudio]);
+  }, [submitAudio, handleInterrupt]);
 
   useEffect(() => {
     if (handsFreeActive && !isJournalistSpeaking && !isProcessing) {
@@ -577,6 +767,7 @@ export default function InterviewStudio({
   const endInterview = () => {
     setPhase("ended");
     stopHandsFree();
+    stopAmbientAudio();
     sessionRecorder.stopSession();
     stopUserVideoRecording();
     stopJournalistAudioRecording();
@@ -588,6 +779,13 @@ export default function InterviewStudio({
     ).join("\n\n");
     onEnd(fullText);
   };
+
+  // ─── Emotional state → visual panel class ────────────────────
+  const panelClass = emotionalState === "urgent"
+    ? "panel-urgent"
+    : emotionalState === "empathetic"
+    ? "panel-empathetic"
+    : "";
 
   // ──────────────────────────────────────────────────────────────
   // RENDER
@@ -613,6 +811,15 @@ export default function InterviewStudio({
             <div className="flex items-center gap-1 text-red-400 text-xs">
               <CircleDot size={11} className="animate-pulse" />
               REC {formatTime(sessionRecorder.durationSecs)}
+            </div>
+          )}
+          {emotionalState !== "neutral" && phase === "active" && (
+            <div className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${
+              emotionalState === "urgent" ? "bg-red-900/40 text-red-400 border border-red-700/40"
+              : emotionalState === "empathetic" ? "bg-blue-900/40 text-blue-400 border border-blue-700/40"
+              : "bg-yellow-900/40 text-yellow-400 border border-yellow-700/40"
+            }`}>
+              {emotionalState === "urgent" ? "URGENT" : emotionalState === "empathetic" ? "SENSITIVE" : "INVESTIGATION"}
             </div>
           )}
         </div>
@@ -674,7 +881,7 @@ export default function InterviewStudio({
       <div className="flex flex-col md:flex-row flex-1 min-h-0 overflow-hidden">
 
         {/* LEFT — Journalist */}
-        <div className="flex-1 relative bg-black overflow-hidden">
+        <div className={`flex-1 relative bg-black overflow-hidden ${panelClass}`}>
           {videoMode === "video" && hasDID ? (
             <VideoJournalist
               ref={didRef}
@@ -697,6 +904,7 @@ export default function InterviewStudio({
                 isSpeaking={isJournalistSpeaking}
                 isListening={isUserRecording}
                 avatarStyle={journalist.avatarStyle}
+                emotionalState={emotionalState}
               />
             </div>
           )}
@@ -826,6 +1034,7 @@ export default function InterviewStudio({
                   <div className={`flex-1 max-w-[85%] flex flex-col gap-0.5 ${msg.role === "interviewee" ? "items-end" : "items-start"}`}>
                     <div className="text-[9px] text-studio-muted">
                       {msg.role === "journalist" ? journalist.name : "You"} · {msg.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                      {msg.interrupted && <span className="ml-1 text-red-400">[interrupted]</span>}
                     </div>
                     <div className="rounded-lg px-3 py-1.5 text-xs leading-relaxed"
                       style={{
@@ -938,7 +1147,7 @@ export default function InterviewStudio({
                 </div>
                 <span className="text-[10px] text-studio-muted text-center">
                   {!handsFreeActive ? "Tap to start"
-                    : isJournalistSpeaking ? "AI speaking"
+                    : isJournalistSpeaking ? "Speak to interrupt"
                     : vadState === "user-speaking" ? "● Speaking"
                     : "Listening…"}
                 </span>
