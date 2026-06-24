@@ -1,7 +1,7 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import { generateJournalistResponse, extractStoryContext } from "@/lib/gemini";
+import { generateJournalistResponse } from "@/lib/gemini";
 import { textToSpeech } from "@/lib/deepgram";
-import { JOURNALISTS, buildInterviewPrompt, getOpeningPrompt } from "@/agents/journalist";
+import { JOURNALISTS, buildInterviewPrompt, getOpeningPrompt, EmotionalState } from "@/agents/journalist";
 
 export const config = { api: { bodyParser: { sizeLimit: "4mb" } } };
 
@@ -15,6 +15,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     history,
     isOpening,
     ttsEnabled,
+    emotionalState = "neutral" as EmotionalState,
+    wasInterrupted = false,
   } = req.body;
 
   const journalist = JOURNALISTS.find(j => j.id === journalistId);
@@ -22,8 +24,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   try {
     const prompt = isOpening
-      ? getOpeningPrompt(journalist, storyTitle || "Untitled Story", storyContext || "")
-      : buildInterviewPrompt(journalist, storyContext || "", storyTitle || "Untitled Story", history || []);
+      ? getOpeningPrompt(journalist, storyTitle || "Untitled Story", storyContext || "", emotionalState)
+      : buildInterviewPrompt(journalist, storyContext || "", storyTitle || "Untitled Story", history || [], emotionalState, wasInterrupted);
 
     const text = await generateJournalistResponse(prompt);
 

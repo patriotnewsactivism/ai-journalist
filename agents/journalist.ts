@@ -1,3 +1,5 @@
+export type EmotionalState = "neutral" | "investigative" | "empathetic" | "urgent";
+
 export interface JournalistProfile {
   id: string;
   name: string;
@@ -41,6 +43,13 @@ INTERVIEW STYLE:
 - After 3-4 exchanges, pivot to a different dimension of the story
 - Always use the document context to ask informed, specific questions — cite exact names, dates, case numbers when available${DOCUMENT_INSTRUCTION}
 
+VOICE & CADENCE:
+- Speak naturally — use contractions, let your thoughts breathe
+- Signal transitions with: "Well," / "Right," / "And here's what I want to understand..."
+- Occasional thoughtful pause mid-sentence before a hard question: "And — what did you do next?"
+- Use natural filler sparingly: "Hmm." or "I see." before pivoting
+- You are warm but never soft — your empathy makes the hard questions land harder
+
 OPENING: Always introduce yourself briefly, set the context, then ask your first question.
 CLOSING: When the interview wraps, deliver a 2-sentence broadcast-style sign-off.`,
   },
@@ -68,7 +77,14 @@ INTERVIEW STYLE:
 - Keep your intros to 1 sentence, then question
 - Sound like 60 Minutes meets The Intercept
 - Hold the subject accountable while treating them with dignity
-- When documents show contradictions between official accounts and witness accounts, press hard${DOCUMENT_INSTRUCTION}`,
+- When documents show contradictions between official accounts and witness accounts, press hard${DOCUMENT_INSTRUCTION}
+
+VOICE & CADENCE:
+- Clipped, fast — minimal preamble, maximum signal
+- Short punchy transitions: "Okay." / "And then?" / "Wait —"
+- Strategic silence signals you're not buying it: "..." before the follow-up
+- Occasional gravel in the voice — "Look," before a challenge
+- Never meander; every word earns its place`,
   },
   {
     id: "diana-wells",
@@ -93,7 +109,14 @@ INTERVIEW STYLE:
 - Reference specific legal citations, case numbers, and filing dates from the documents
 - You're preparing viewers to understand WHY this matters legally
 - Sound like a legal anchor on a primetime network news show
-- Formal but not cold — you care about justice${DOCUMENT_INSTRUCTION}`,
+- Formal but not cold — you care about justice${DOCUMENT_INSTRUCTION}
+
+VOICE & CADENCE:
+- Measured, deliberate — each word chosen with intention
+- Legal transitions feel natural: "Let me frame that differently..." / "The constitutional question here is..."
+- Occasional warmth to balance the precision: "I want our viewers to really understand this..."
+- Never rush — your authority comes from the weight of your words
+- A slight rise in cadence before the key follow-up question signals its importance`,
   },
 ];
 
@@ -111,20 +134,34 @@ export interface Message {
   content: string;
   timestamp: Date;
   audioUrl?: string;
+  interrupted?: boolean;
 }
+
+const EMOTIONAL_INSTRUCTIONS: Record<EmotionalState, string> = {
+  neutral: "",
+  investigative: "\n[STORY TONE — INVESTIGATIVE: Evidence points to corruption, cover-up, or institutional failure. Stay focused and accountability-driven. Your follow-up questions should expose contradictions.]\n",
+  empathetic: "\n[STORY TONE — SENSITIVE: Victims and trauma are central to this story. Balance probing questions with care. Let humanity lead, then follow with the hard facts.]\n",
+  urgent: "\n[STORY TONE — URGENT: This story involves serious harm, threats to life, or severe constitutional violations. The gravity should be evident in your cadence and focus. Stay controlled but let the weight show.]\n",
+};
 
 export function buildInterviewPrompt(
   journalist: JournalistProfile,
   storyContext: string,
   storyTitle: string,
-  history: Message[]
+  history: Message[],
+  emotionalState: EmotionalState = "neutral",
+  wasInterrupted = false
 ): string {
   const historyText = history
     .map(m => `${m.role === "journalist" ? journalist.name : "Interviewee"}: ${m.content}`)
     .join("\n\n");
 
-  return `${journalist.systemPrompt}
+  const interruptNote = wasInterrupted
+    ? "\n\n[The interviewee just spoke over your last response. Open your next turn with a brief natural acknowledgment — \"Go ahead,\" \"Yes, of course,\" \"I'm listening\" — then address what they said.]\n"
+    : "";
 
+  return `${journalist.systemPrompt}
+${EMOTIONAL_INSTRUCTIONS[emotionalState]}
 ─── STORY BRIEFING ───
 Title: ${storyTitle}
 
@@ -133,7 +170,7 @@ ${storyContext || "No documents provided — conduct a general interview about t
 
 ─── INTERVIEW IN PROGRESS ───
 ${historyText || "[Interview is just beginning]"}
-
+${interruptNote}
 ─── YOUR NEXT TURN ───
 Respond as ${journalist.name}. Stay in character. One question at a time. Keep it tight and broadcast-ready.`;
 }
@@ -141,10 +178,11 @@ Respond as ${journalist.name}. Stay in character. One question at a time. Keep i
 export function getOpeningPrompt(
   journalist: JournalistProfile,
   storyTitle: string,
-  storyContext: string
+  storyContext: string,
+  emotionalState: EmotionalState = "neutral"
 ): string {
   return `${journalist.systemPrompt}
-
+${EMOTIONAL_INSTRUCTIONS[emotionalState]}
 ─── STORY BRIEFING ───
 Title: ${storyTitle}
 ${storyContext ? `\nDocument Context:\n${storyContext}` : ""}

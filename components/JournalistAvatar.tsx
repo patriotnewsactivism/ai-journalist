@@ -1,6 +1,7 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { Mic } from "lucide-react";
+import { EmotionalState } from "@/agents/journalist";
 
 interface Props {
   name: string;
@@ -10,6 +11,7 @@ interface Props {
   isSpeaking: boolean;
   isListening: boolean;
   avatarStyle: string;
+  emotionalState?: EmotionalState;
 }
 
 // SVG Avatar faces — different journalists
@@ -165,13 +167,27 @@ const AVATAR_SVGS: Record<string, string> = {
   `,
 };
 
+// Eye overlay positions per avatar style (SVG viewBox 200x200, rendered at w-48 h-48 = 192px)
+const EYE_POSITIONS: Record<string, { left: { x: number; y: number }; right: { x: number; y: number }; h: number; w: number }> = {
+  "professional-woman-dark":  { left: { x: 37, y: 49 }, right: { x: 55, y: 49 }, w: 9, h: 7 },
+  "professional-man-light":   { left: { x: 37, y: 50 }, right: { x: 55, y: 50 }, w: 9, h: 7 },
+  "professional-woman-light": { left: { x: 37, y: 49 }, right: { x: 55, y: 49 }, w: 9, h: 7 },
+};
+
 export default function JournalistAvatar({
-  name, title, outlet, accentColor, isSpeaking, isListening, avatarStyle
+  name, title, outlet, accentColor, isSpeaking, isListening, avatarStyle,
+  emotionalState = "neutral",
 }: Props) {
   const [lipFrame, setLipFrame] = useState(0);
   const [waveAmps, setWaveAmps] = useState([0.3, 0.5, 0.7, 0.4, 0.6, 0.3, 0.8, 0.4]);
+  const [isBlinking, setIsBlinking] = useState(false);
+  const [breathOffset, setBreathOffset] = useState(0);
   const animRef = useRef<number>();
+  const blinkTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const breathAnimRef = useRef<number>();
+  const breathPhaseRef = useRef(0);
 
+  // Lip animation while speaking
   useEffect(() => {
     if (isSpeaking) {
       const animate = () => {
@@ -188,8 +204,56 @@ export default function JournalistAvatar({
     return () => { if (animRef.current) cancelAnimationFrame(animRef.current); };
   }, [isSpeaking]);
 
+  // Breathing animation — subtle vertical oscillation
+  useEffect(() => {
+    const animate = () => {
+      breathPhaseRef.current += 0.018;
+      setBreathOffset(Math.sin(breathPhaseRef.current) * 1.8);
+      breathAnimRef.current = requestAnimationFrame(animate);
+    };
+    breathAnimRef.current = requestAnimationFrame(animate);
+    return () => { if (breathAnimRef.current) cancelAnimationFrame(breathAnimRef.current); };
+  }, []);
+
+  // Blink at randomized intervals (2.5s–6s)
+  const scheduleBlink = useCallback(() => {
+    const delay = 2500 + Math.random() * 3500;
+    blinkTimerRef.current = setTimeout(() => {
+      setIsBlinking(true);
+      setTimeout(() => {
+        setIsBlinking(false);
+        scheduleBlink();
+      }, 120);
+    }, delay);
+  }, []);
+
+  useEffect(() => {
+    scheduleBlink();
+    return () => { if (blinkTimerRef.current) clearTimeout(blinkTimerRef.current); };
+  }, [scheduleBlink]);
+
   const svgContent = AVATAR_SVGS[avatarStyle] || AVATAR_SVGS["professional-woman-dark"];
-  const lipHeights = [0.9, 0.5, 0.3, 0.5, 0.7, 0.9][lipFrame];
+  const eyePos = EYE_POSITIONS[avatarStyle] || EYE_POSITIONS["professional-woman-dark"];
+
+  // Emotional state modulates the glow color and intensity
+  const glowColor = emotionalState === "urgent"
+    ? "rgba(204,41,54,0.85)"
+    : emotionalState === "empathetic"
+    ? "rgba(26,107,255,0.7)"
+    : emotionalState === "investigative"
+    ? accentColor + "cc"
+    : accentColor;
+
+  const ringStyle = isSpeaking
+    ? { boxShadow: `0 0 0 3px ${glowColor}, 0 0 40px ${glowColor}55, 0 0 80px ${glowColor}22` }
+    : isListening
+    ? { boxShadow: `0 0 0 2px rgba(26,107,255,0.6), 0 0 25px rgba(26,107,255,0.2)` }
+    : { boxShadow: `0 0 0 2px rgba(37,37,53,0.8)` };
+
+  // Head tilt while listening (subtle)
+  const tiltStyle = isListening && !isSpeaking
+    ? { transform: `translateY(${breathOffset}px) rotate(1.5deg)`, transition: "transform 0.6s ease" }
+    : { transform: `translateY(${breathOffset}px)`, transition: "transform 0.1s linear" };
 
   return (
     <div className="flex flex-col items-center gap-3">
@@ -198,23 +262,45 @@ export default function JournalistAvatar({
         {/* Outer glow ring */}
         <div
           className="absolute inset-0 rounded-full transition-all duration-300"
-          style={{
-            boxShadow: isSpeaking
-              ? `0 0 0 3px ${accentColor}, 0 0 40px ${accentColor}55, 0 0 80px ${accentColor}22`
-              : isListening
-              ? `0 0 0 2px rgba(26,107,255,0.6), 0 0 25px rgba(26,107,255,0.2)`
-              : `0 0 0 2px rgba(37,37,53,0.8)`,
-          }}
+          style={ringStyle}
         />
 
-        {/* Avatar circle */}
-        <div
-          className="relative w-48 h-48 rounded-full overflow-hidden crt"
-          style={{ border: `3px solid ${accentColor}33` }}
-          dangerouslySetInnerHTML={{ __html: svgContent }}
-        />
+        {/* Avatar circle with breathing + tilt */}
+        <div style={tiltStyle}>
+          <div
+            className="relative w-48 h-48 rounded-full overflow-hidden crt"
+            style={{ border: `3px solid ${accentColor}33` }}
+            dangerouslySetInnerHTML={{ __html: svgContent }}
+          />
 
-        {/* Speaking overlay — lip animation indicator */}
+          {/* Blink overlay — covers the eyes briefly */}
+          {isBlinking && (
+            <div className="absolute inset-0 pointer-events-none" style={{ borderRadius: "50%", overflow: "hidden" }}>
+              {/* Left eye cover */}
+              <div className="absolute" style={{
+                left: `${eyePos.left.x - eyePos.w / 2}%`,
+                top: `${eyePos.left.y - eyePos.h / 2}%`,
+                width: `${eyePos.w * 2}%`,
+                height: `${eyePos.h * 2}%`,
+                background: "var(--skin-tone, #c68642)",
+                borderRadius: "50%",
+                opacity: 0.95,
+              }} />
+              {/* Right eye cover */}
+              <div className="absolute" style={{
+                left: `${eyePos.right.x - eyePos.w / 2}%`,
+                top: `${eyePos.right.y - eyePos.h / 2}%`,
+                width: `${eyePos.w * 2}%`,
+                height: `${eyePos.h * 2}%`,
+                background: "var(--skin-tone, #c68642)",
+                borderRadius: "50%",
+                opacity: 0.95,
+              }} />
+            </div>
+          )}
+        </div>
+
+        {/* Speaking waveform overlay */}
         {isSpeaking && (
           <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-end gap-0.5">
             {waveAmps.map((amp, i) => (
@@ -223,7 +309,7 @@ export default function JournalistAvatar({
                 className="w-1 rounded-full transition-all duration-75"
                 style={{
                   height: `${amp * 20 + 4}px`,
-                  backgroundColor: accentColor,
+                  backgroundColor: glowColor,
                   opacity: 0.85,
                 }}
               />
@@ -238,9 +324,10 @@ export default function JournalistAvatar({
           </div>
         )}
 
-        {/* LIVE badge when speaking */}
+        {/* LIVE / state badge */}
         {isSpeaking && (
-          <div className="absolute top-2 left-2 flex items-center gap-1 bg-red-600 text-white text-[10px] font-bold px-2 py-0.5 rounded">
+          <div className="absolute top-2 left-2 flex items-center gap-1 text-white text-[10px] font-bold px-2 py-0.5 rounded"
+            style={{ background: emotionalState === "urgent" ? "#cc2936" : "#cc2936" }}>
             <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
             ON AIR
           </div>
@@ -267,7 +354,10 @@ export default function JournalistAvatar({
           border: `1px solid ${isSpeaking ? accentColor + "44" : isListening ? "rgba(26,107,255,0.3)" : "rgba(37,37,53,0.8)"}`,
         }}
       >
-        {isSpeaking ? "● Speaking" : isListening ? "○ Listening" : "○ Ready"}
+        {isSpeaking
+          ? emotionalState === "urgent" ? "● On Air — URGENT" : "● Speaking"
+          : isListening ? "○ Listening"
+          : "○ Ready"}
       </div>
     </div>
   );
