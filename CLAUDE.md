@@ -24,7 +24,7 @@ Copy `.env.local.example` to `.env.local` and fill in:
 | `NEXT_PUBLIC_DID_CLIENT_KEY` | Optional | D-ID streaming avatar (client-side) |
 | `NEXT_PUBLIC_DID_AGENT_ID` | Optional | D-ID Agent ID (client-side) |
 
-Without D-ID keys the app uses the animated SVG avatar + Deepgram TTS. With D-ID keys a real WebRTC video journalist becomes available in-studio.
+Without D-ID keys the app uses the animated SVG avatar + ElevenLabs TTS. With D-ID keys a real WebRTC video journalist becomes available in-studio.
 
 > `lib/gemini.ts` is the LLM module but now calls Groq, not Gemini — the filename is historical.
 > `lib/deepgram.ts` still exists but is now used only for STT (`speechToText`). TTS is handled by `lib/elevenlabs.ts`.
@@ -51,8 +51,8 @@ Defines `JOURNALISTS` (3 profiles — Morgan Chase, Alex Rivers, Diana Wells), `
 
 | Route | Does |
 |---|---|
-| `POST /api/interview/respond` | Calls Groq → generates journalist text, optionally calls Deepgram TTS (for D-ID mode only) → returns `{ text, audioBase64 }` |
-| `POST /api/interview/tts` | Sentence-level TTS endpoint — strips markdown, calls Deepgram Aura-2, returns `{ audioBase64 }` |
+| `POST /api/interview/respond` | Calls Groq → generates journalist text, optionally calls ElevenLabs TTS (for D-ID mode only) → returns `{ text, audioBase64 }` |
+| `POST /api/interview/tts` | Sentence-level TTS endpoint — strips markdown, calls ElevenLabs eleven_turbo_v2_5 via `lib/elevenlabs.ts`, returns `{ audioBase64 }` |
 | `POST /api/interview/transcribe` | Receives `multipart/form-data` audio, forwards to Deepgram Nova-3, returns `{ transcript }` |
 | `POST /api/interview/extract-context` | Receives document text + story title, calls `extractStoryContext()`, returns story brief |
 | `POST /api/interview/summary` | Receives final transcript, calls `generateInterviewSummary()`, returns formatted brief |
@@ -77,7 +77,7 @@ Two mic modes in `InterviewStudio`:
 
 ### D-ID video journalist (`components/VideoJournalist.tsx`)
 
-Loaded via `next/dynamic` with `ssr: false` (uses browser WebRTC APIs). Exposed via `forwardRef` with a `VideoJournalistHandle` imperative API (`connect`, `speak`, `disconnect`). When D-ID is active, `InterviewStudio` calls `didRef.current.speak(text)` instead of the sentence-pipelined TTS; the server-side Deepgram audio is kept as a fallback.
+Loaded via `next/dynamic` with `ssr: false` (uses browser WebRTC APIs). Exposed via `forwardRef` with a `VideoJournalistHandle` imperative API (`connect`, `speak`, `disconnect`). When D-ID is active, `InterviewStudio` calls `didRef.current.speak(text)` instead of the sentence-pipelined TTS; the server-side ElevenLabs audio is kept as a fallback.
 
 ### Animated SVG avatar (`components/JournalistAvatar.tsx`)
 
