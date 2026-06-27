@@ -1,5 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import { textToSpeech } from "@/lib/deepgram";
+import { textToSpeech } from "@/lib/elevenlabs";
 
 export const config = { api: { bodyParser: { sizeLimit: "1mb" } } };
 

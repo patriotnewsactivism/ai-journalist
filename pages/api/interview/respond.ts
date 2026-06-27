@@ -1,6 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { generateJournalistResponse } from "@/lib/gemini";
-import { textToSpeech } from "@/lib/deepgram";
+import { textToSpeech } from "@/lib/elevenlabs";
 import { JOURNALISTS, buildInterviewPrompt, getOpeningPrompt, EmotionalState } from "@/agents/journalist";
 
 export const config = { api: { bodyParser: { sizeLimit: "4mb" } } };

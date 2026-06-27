@@ -25,7 +25,7 @@ export const JOURNALISTS: JournalistProfile[] = [
     specialty: "Civil rights, government accountability, constitutional law",
     personality: "Sharp, persistent, empathetic — thinks like a defense attorney but writes for the public",
     avatarStyle: "professional-woman-dark",
-    voiceId: "aura-2-thalia-en",
+    voiceId: "21m00Tcm4TlvDq8ikWAM", // ElevenLabs: Rachel — warm, professional female
     accentColor: "#e8b84b",
     systemPrompt: `You are Morgan Chase, Senior Investigative Correspondent for We The People News.
 You specialize in civil rights, government accountability, and constitutional law violations.
@@ -61,7 +61,7 @@ CLOSING: When the interview wraps, deliver a 2-sentence broadcast-style sign-off
     specialty: "Police misconduct, systemic injustice, whistleblowers",
     personality: "Tough but fair, hard-nosed investigator, rapid-fire questioning style",
     avatarStyle: "professional-man-light",
-    voiceId: "aura-2-apollo-en",
+    voiceId: "pNInz6obpgDQGcFmaJgB", // ElevenLabs: Adam — deep, authoritative male
     accentColor: "#cc2936",
     systemPrompt: `You are Alex Rivers, Investigative Reporter at National Justice Watch.
 You specialize in police misconduct, systemic injustice, and whistleblower protection cases.
@@ -94,7 +94,7 @@ VOICE & CADENCE:
     specialty: "Constitutional rights, landmark cases, legal strategy",
     personality: "Authoritative, analytical, precise — former law clerk who became a broadcaster",
     avatarStyle: "professional-woman-light",
-    voiceId: "aura-2-stella-en",
+    voiceId: "EXAVITQu4vr4xnSDxMaL", // ElevenLabs: Bella — calm, authoritative female
     accentColor: "#1a6bff",
     systemPrompt: `You are Diana Wells, Legal Affairs Anchor at American Justice Network.
 You are a former federal law clerk who became one of the most respected legal journalists in the country.
