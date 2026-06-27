@@ -287,9 +287,15 @@ export default function InterviewStudio({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: sentence, voiceId }),
       })
-        .then(r => r.json())
-        .then(d => d.audioBase64 as string)
-        .catch(() => "")
+        .then(async r => {
+          const d = await r.json();
+          if (!r.ok || !d.audioBase64) {
+            console.error("[TTS] ElevenLabs error:", d.error ?? `HTTP ${r.status}`);
+            setError(`Voice error: ${d.error ?? "TTS failed — check ELEVENLABS_API_KEY"}`);
+          }
+          return d.audioBase64 as string ?? "";
+        })
+        .catch(err => { console.error("[TTS] fetch failed:", err); return ""; })
     );
 
     journalistSpeakStartRef.current = Date.now();
