@@ -3,18 +3,60 @@
 //  Replaces Gemini — same function signatures
 // ─────────────────────────────────────────────
 
-async function groqChat(systemPrompt: string, userPrompt: string, maxTokens = 800): Promise<string> {
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) throw new Error("GROQ_API_KEY not set");
+const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
+const GROQ_MODEL = "llama-3.3-70b-versatile";
 
-  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+function getGroqKey() {
+  const key = process.env.GROQ_API_KEY;
+  if (!key) throw new Error("GROQ_API_KEY not set");
+  return key;
+}
+
+export async function groqChatStream(systemPrompt: string, userPrompt: string, maxTokens = 800): Promise<Response> {
+  const res = await fetch(GROQ_URL, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": "Bearer " + apiKey,
-    },
+    headers: { "Content-Type": "application/json", "Authorization": "Bearer " + getGroqKey() },
     body: JSON.stringify({
-      model: "llama-3.3-70b-versatile",
+      model: GROQ_MODEL,
+      temperature: 0.85,
+      max_tokens: maxTokens,
+      stream: true,
+      messages: [
+        ...(systemPrompt ? [{ role: "system", content: systemPrompt }] : []),
+        { role: "user", content: userPrompt },
+      ],
+    }),
+  });
+  if (!res.ok) throw new Error("Groq error " + res.status + ": " + (await res.text()));
+  return res;
+}
+
+export async function groqChatJSON(systemPrompt: string, userPrompt: string, maxTokens = 600): Promise<any> {
+  const res = await fetch(GROQ_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": "Bearer " + getGroqKey() },
+    body: JSON.stringify({
+      model: GROQ_MODEL,
+      temperature: 0.5,
+      max_tokens: maxTokens,
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+    }),
+  });
+  if (!res.ok) throw new Error("Groq error " + res.status + ": " + (await res.text()));
+  const data = await res.json();
+  return JSON.parse(data.choices?.[0]?.message?.content ?? "{}");
+}
+
+async function groqChat(systemPrompt: string, userPrompt: string, maxTokens = 800): Promise<string> {
+  const res = await fetch(GROQ_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": "Bearer " + getGroqKey() },
+    body: JSON.stringify({
+      model: GROQ_MODEL,
       temperature: 0.85,
       max_tokens: maxTokens,
       messages: [
@@ -23,12 +65,7 @@ async function groqChat(systemPrompt: string, userPrompt: string, maxTokens = 80
       ],
     }),
   });
-
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error("Groq error " + res.status + ": " + err);
-  }
-
+  if (!res.ok) throw new Error("Groq error " + res.status + ": " + (await res.text()));
   const data = await res.json();
   return data.choices?.[0]?.message?.content?.trim() ?? "";
 }

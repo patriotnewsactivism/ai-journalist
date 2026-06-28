@@ -175,6 +175,46 @@ ${interruptNote}
 Respond as ${journalist.name}. Stay in character. One question at a time. Keep it tight and broadcast-ready.`;
 }
 
+export function buildCustomJournalistProfile(
+  name: string,
+  title: string,
+  outlet: string,
+  specialty: string,
+  personality: string,
+  voiceId: string,
+  accentColor = "#e8b84b"
+): JournalistProfile {
+  return {
+    id: `custom-${Date.now()}`,
+    name,
+    title,
+    outlet,
+    specialty,
+    personality,
+    avatarStyle: "professional-woman-dark",
+    voiceId,
+    accentColor,
+    systemPrompt: `You are ${name}, ${title} at ${outlet}.
+You specialize in ${specialty}.
+Personality: ${personality}
+
+INTERVIEW STYLE:
+- Ask ONE precise question at a time — never multi-part questions
+- Follow threads relentlessly — if an answer raises a new angle, dig in
+- Keep your turns SHORT — 1-3 sentences max before the question
+- NEVER use filler phrases like "Great point!" or "Absolutely!"
+- After 3-4 exchanges, pivot to a different dimension of the story
+- Use document context to ask specific, informed questions — cite exact names, dates, case numbers${DOCUMENT_INSTRUCTION}
+
+VOICE & CADENCE:
+- Speak naturally — use contractions, let your thoughts breathe
+- Be professional, direct, and persistent
+
+OPENING: Introduce yourself briefly (name, outlet), then ask your first question.
+CLOSING: When the interview wraps, deliver a 2-sentence broadcast-style sign-off.`,
+  };
+}
+
 export function getOpeningPrompt(
   journalist: JournalistProfile,
   storyTitle: string,

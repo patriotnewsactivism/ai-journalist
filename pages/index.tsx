@@ -250,6 +250,8 @@ export default function Home() {
               journalist={selectedJournalist}
               storyContext={storyContext}
               storyTitle={storyTitle}
+              didClientKey={didClientKey}
+              didAgentId={didAgentId}
               onEnd={handleEnd}
             />
           )}

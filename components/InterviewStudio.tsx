@@ -96,6 +96,9 @@ export default function InterviewStudio({
   const [transcriptOpen, setTranscriptOpen] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [wasInterrupted, setWasInterrupted] = useState(false);
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [factCheckItems, setFactCheckItems] = useState<string[]>([]);
+  const [showResearch, setShowResearch] = useState(false);
 
   // Emotional state — derived from story content, stable for session
   const emotionalState = useMemo<EmotionalState>(
@@ -157,6 +160,10 @@ export default function InterviewStudio({
   useEffect(() => { historyRef.current = history; }, [history]);
   useEffect(() => { wasInterruptedRef.current = wasInterrupted; }, [wasInterrupted]);
 
+  // TTS promise-chain for streaming playback
+  // eslint-disable-next-line @typescript-eslint/no-empty-function
+  const ttsChainRef = useRef<Promise<void>>(Promise.resolve());
+
   // Timer
   useEffect(() => {
     if (phase === "active" || phase === "opening") {
@@ -182,6 +189,35 @@ export default function InterviewStudio({
   }, [webcamEnabled, webcamStream]);
 
   useEffect(() => { return () => stopHandsFree(); }, []);
+
+  // Keyboard shortcuts (Space=PTT, Esc=interrupt, M=mute)
+  useEffect(() => {
+    if (phase !== "active") return;
+    const onDown = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement;
+      if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT") return;
+      if (e.code === "Space" && !e.repeat && micMode === "push-to-talk") { e.preventDefault(); startPTT(); }
+      if (e.code === "Escape" && isJournalistSpeakingRef.current) handleInterrupt();
+      if (e.code === "KeyM" && !e.repeat) {
+        setTtsEnabled(prev => {
+          if (prev) {
+            audioRef.current?.pause();
+            setIsJournalistSpeaking(false);
+            isJournalistSpeakingRef.current = false;
+          }
+          return !prev;
+        });
+      }
+    };
+    const onUp = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement;
+      if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") return;
+      if (e.code === "Space" && micMode === "push-to-talk") stopPTT();
+    };
+    window.addEventListener("keydown", onDown);
+    window.addEventListener("keyup", onUp);
+    return () => { window.removeEventListener("keydown", onDown); window.removeEventListener("keyup", onUp); };
+  }, [phase, micMode, handleInterrupt]);
 
   const formatTime = (s: number) =>
     `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
@@ -345,100 +381,165 @@ export default function InterviewStudio({
     });
   }, []);
 
-  // ─── Journalist response (with existing history) ──────────────
-  const askJournalistWithHistory = useCallback(async (fullHistory: Message[]) => {
-    setIsProcessing(true);
-    const interrupted = wasInterruptedRef.current;
-    setWasInterrupted(false);
+  // ─── Fetch post-turn suggestions + fact-check ─────────────────
+  const fetchPostTurn = useCallback(async (lastTurn: string, currentHistory: Message[]) => {
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 30000);
-      const res = await fetch("/api/interview/respond", {
+      const res = await fetch("/api/interview/post-turn", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
-        body: JSON.stringify({
-          journalistId: journalist.id, storyTitle, storyContext,
-          history: fullHistory, isOpening: false,
-          ttsEnabled: videoMode === "video", // only need server TTS for D-ID
-          emotionalState,
-          wasInterrupted: interrupted,
-        }),
+        body: JSON.stringify({ lastJournalistTurn: lastTurn, storyContext, history: currentHistory.slice(-6) }),
       });
-      clearTimeout(timeout);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
+      if (!res.ok) return;
+      const { suggestions: sugg, factCheck } = await res.json();
+      setSuggestions(sugg || []);
+      setFactCheckItems(factCheck || []);
+    } catch { /* non-critical */ }
+  }, [storyContext]);
 
-      const msg: Message = { role: "journalist", content: data.text, timestamp: new Date() };
-      setHistory(prev => [...prev, msg]);
-
-      if (videoMode === "video" && didReady && didRef.current) {
-        journalistSpeakStartRef.current = Date.now();
-        setIsJournalistSpeaking(true);
-        isJournalistSpeakingRef.current = true;
-        try { await didRef.current.speak(data.text); }
-        catch { if (data.audioBase64) await playAudio(data.audioBase64); }
-        setIsJournalistSpeaking(false);
-        isJournalistSpeakingRef.current = false;
-      } else if (ttsEnabled) {
-        await playAudioPipelined(data.text, journalist.voiceId);
-      }
-    } catch (err: any) {
-      setError(err.name === "AbortError"
-        ? "Request timed out. Check your API keys."
-        : err.message);
-    } finally {
-      setIsProcessing(false);
-    }
-  }, [journalist.id, storyTitle, storyContext, ttsEnabled, videoMode, didReady, emotionalState, playAudio, playAudioPipelined]);
-
-  // ─── Journalist response (uses current history state) ─────────
-  const askJournalist = useCallback(async (isOpening = false) => {
-    setIsProcessing(true);
-    setError(null);
+  // ─── Core streaming journalist response ───────────────────────
+  const streamJournalist = useCallback(async (isOpening: boolean, currentHistory: Message[]) => {
     const interrupted = wasInterruptedRef.current;
     if (!isOpening) setWasInterrupted(false);
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 30000);
-      const res = await fetch("/api/interview/respond", {
+
+    setIsProcessing(true);
+    setError(null);
+    setSuggestions([]);
+    setFactCheckItems([]);
+
+    let fullText = "";
+    let sentenceBuf = "";
+    let streamBuf = "";
+    let speakingStarted = false;
+    ttsChainRef.current = Promise.resolve();
+
+    const enqueueSentence = (sentence: string) => {
+      if (!ttsEnabled || videoMode === "video") return;
+      if (!speakingStarted) {
+        journalistSpeakStartRef.current = Date.now();
+        interruptedRef.current = false;
+        setIsJournalistSpeaking(true);
+        isJournalistSpeakingRef.current = true;
+        speakingStarted = true;
+      }
+      const audioP = fetch("/api/interview/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
+        body: JSON.stringify({ text: sentence, voiceId: journalist.voiceId }),
+      }).then(async r => {
+        const d = await r.json();
+        if (!r.ok || !d.audioBase64) {
+          console.error("[TTS]", d.error ?? `HTTP ${r.status}`);
+          setError(`Voice error: ${d.error ?? "TTS failed — check ELEVENLABS_API_KEY"}`);
+          return "";
+        }
+        return d.audioBase64 as string;
+      }).catch(err => { console.error("[TTS] fetch:", err); return ""; });
+
+      ttsChainRef.current = ttsChainRef.current.then(async () => {
+        if (interruptedRef.current) return;
+        const base64 = await audioP;
+        if (base64 && !interruptedRef.current) await playAudioChunk(base64);
+      });
+    };
+
+    try {
+      const res = await fetch("/api/interview/respond-stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           journalistId: journalist.id, storyTitle, storyContext,
-          history, isOpening,
-          ttsEnabled: videoMode === "video",
-          emotionalState,
+          history: currentHistory, isOpening, emotionalState,
           wasInterrupted: isOpening ? false : interrupted,
         }),
       });
-      clearTimeout(timeout);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to get response");
 
-      const msg: Message = { role: "journalist", content: data.text, timestamp: new Date() };
-      setHistory(prev => [...prev, msg]);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        throw new Error(err.error || "Stream failed");
+      }
 
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        streamBuf += decoder.decode(value, { stream: true });
+        const parts = streamBuf.split("\n\n");
+        streamBuf = parts.pop() ?? "";
+
+        for (const part of parts) {
+          const trimmed = part.trim();
+          if (!trimmed.startsWith("data: ")) continue;
+          const payload = trimmed.slice(6).trim();
+          if (payload === "[DONE]") break;
+          try {
+            const { token } = JSON.parse(payload);
+            if (!token) continue;
+            fullText += token;
+            sentenceBuf += token;
+
+            // Detect sentence boundary, protecting common abbreviations
+            const prot = sentenceBuf.replace(
+              /\b(Dr|Mr|Mrs|Ms|Prof|Sr|Jr|vs|etc|No|Fig|Lt|Sgt|Det)\./gi,
+              m => m.replace(".", "§")
+            );
+            const match = prot.match(/^([\s\S]*?[.!?])\s+(?=[A-Z"'“])/);
+            if (match) {
+              const sentence = match[1].replace(/§/g, ".").trim();
+              sentenceBuf = sentenceBuf.slice(match[0].length);
+              if (sentence.length >= 8) enqueueSentence(sentence);
+            }
+          } catch {}
+        }
+      }
+
+      // Flush remainder
+      const remainder = sentenceBuf.trim();
+      if (remainder.length >= 4) enqueueSentence(remainder);
+
+      // Wait for TTS chain to finish
+      await ttsChainRef.current;
+      if (!interruptedRef.current) {
+        setIsJournalistSpeaking(false);
+        isJournalistSpeakingRef.current = false;
+      }
+
+      // D-ID video mode: speak full text
       if (videoMode === "video" && didReady && didRef.current) {
         journalistSpeakStartRef.current = Date.now();
         setIsJournalistSpeaking(true);
         isJournalistSpeakingRef.current = true;
-        try { await didRef.current.speak(data.text); }
-        catch { if (data.audioBase64) await playAudio(data.audioBase64); }
+        try { await didRef.current.speak(fullText); } catch { /* ignore */ }
         setIsJournalistSpeaking(false);
         isJournalistSpeakingRef.current = false;
-      } else if (ttsEnabled) {
-        await playAudioPipelined(data.text, journalist.voiceId);
       }
+
+      const msg: Message = { role: "journalist", content: fullText, timestamp: new Date() };
+      setHistory(prev => [...prev, msg]);
+
+      if (fullText && !isOpening) {
+        fetchPostTurn(fullText, [...currentHistory, msg]);
+      }
+
     } catch (err: any) {
-      setError(err.name === "AbortError"
-        ? "Request timed out. Check your API keys."
-        : err.message);
+      setError(err.message || "Failed to get journalist response");
+      setIsJournalistSpeaking(false);
+      isJournalistSpeakingRef.current = false;
     } finally {
       setIsProcessing(false);
     }
-  }, [journalist.id, storyTitle, storyContext, history, ttsEnabled, videoMode, didReady, emotionalState, playAudio, playAudioPipelined]);
+  }, [journalist.id, journalist.voiceId, storyTitle, storyContext, ttsEnabled, videoMode, didReady, emotionalState, playAudioChunk, fetchPostTurn]);
+
+  // Suggestion click — bypass STT, send directly as user answer
+  const handleSuggestionClick = useCallback(async (text: string) => {
+    setSuggestions([]);
+    const userMsg: Message = { role: "interviewee", content: text, timestamp: new Date() };
+    const updated = [...historyRef.current, userMsg];
+    setHistory(updated);
+    await streamJournalist(false, updated);
+  }, [streamJournalist]);
 
   const startInterview = async () => {
     setPhase("opening");
@@ -447,7 +548,7 @@ export default function InterviewStudio({
     }
     // Start journalist audio recorder before the opening so it captures the first question
     startJournalistAudioRecording();
-    await askJournalist(true);
+    await streamJournalist(true, []);
     setPhase("active");
     // Auto-start recording and hands-free listening
     setSessionRecording(true);
@@ -480,7 +581,7 @@ export default function InterviewStudio({
       const userMsg: Message = { role: "interviewee", content: transcript, timestamp: new Date() };
       const updated = [...currentHistory, userMsg];
       setHistory(updated);
-      await askJournalistWithHistory(updated);
+      await streamJournalist(false, updated);
     } catch (err: any) {
       setError(err.name === "AbortError"
         ? "Transcription timed out. Please try again."
@@ -831,6 +932,15 @@ export default function InterviewStudio({
         </div>
 
         <div className="flex items-center gap-1">
+          {factCheckItems.length > 0 && (
+            <button
+              title="Research context"
+              onClick={() => setShowResearch(r => !r)}
+              className={`p-1.5 rounded-md transition-colors text-xs font-bold ${showResearch ? "text-studio-accent" : "text-studio-muted hover:text-white"}`}
+            >
+              ▸
+            </button>
+          )}
           {hasDID && (
             <button
               onClick={() => setVideoMode(m => m === "avatar" ? "video" : "avatar")}
@@ -844,7 +954,20 @@ export default function InterviewStudio({
               Live Video
             </button>
           )}
-          <button onClick={() => setTtsEnabled(!ttsEnabled)} className={`p-1.5 rounded-md transition-colors ${ttsEnabled ? "text-studio-accent" : "text-studio-muted hover:text-white"}`}>
+          <button
+            title={ttsEnabled ? "Mute journalist (M)" : "Unmute journalist (M)"}
+            onClick={() => {
+              if (ttsEnabled) {
+                audioRef.current?.pause();
+                setIsJournalistSpeaking(false);
+                isJournalistSpeakingRef.current = false;
+                interruptedRef.current = true;
+                setTimeout(() => { interruptedRef.current = false; }, 200);
+              }
+              setTtsEnabled(t => !t);
+            }}
+            className={`p-1.5 rounded-md transition-colors ${ttsEnabled ? "text-studio-accent" : "text-studio-muted hover:text-white"}`}
+          >
             {ttsEnabled ? <Volume2 size={15} /> : <VolumeX size={15} />}
           </button>
           <button onClick={toggleWebcam} className={`p-1.5 rounded-md transition-colors ${webcamEnabled ? "text-studio-accent" : "text-studio-muted hover:text-white"}`}>
@@ -1059,6 +1182,43 @@ export default function InterviewStudio({
         </>
       )}
 
+      {/* ── SUGGESTIONS ── */}
+      {suggestions.length > 0 && phase === "active" && (
+        <div className="px-3 pt-2 pb-1 bg-studio-dark border-t border-studio-border flex-shrink-0">
+          <div className="text-[9px] text-studio-muted uppercase tracking-wider mb-1.5 font-semibold">Suggested responses — click to send</div>
+          <div className="flex flex-wrap gap-1.5">
+            {suggestions.map((s, i) => (
+              <button
+                key={i}
+                onClick={() => handleSuggestionClick(s)}
+                disabled={isProcessing || isJournalistSpeaking}
+                className="text-[11px] px-2.5 py-1.5 rounded-lg border border-studio-border bg-studio-card hover:border-studio-accent hover:text-white text-studio-muted transition-all disabled:opacity-40 text-left max-w-xs"
+              >
+                "{s}"
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── RESEARCH PANEL ── */}
+      {showResearch && factCheckItems.length > 0 && (
+        <div className="px-3 py-2 bg-studio-panel border-t border-studio-border flex-shrink-0">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-[9px] font-bold uppercase tracking-wider text-studio-accent">Research Context</span>
+            <button onClick={() => setShowResearch(false)} className="text-studio-muted hover:text-white text-xs leading-none">×</button>
+          </div>
+          <ul className="space-y-1">
+            {factCheckItems.map((item, i) => (
+              <li key={i} className="text-[11px] text-white/70 leading-relaxed flex gap-2">
+                <span className="text-studio-accent mt-0.5 flex-shrink-0">▸</span>
+                {item}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* ── ERROR ── */}
       {error && (
         <div className="mx-3 my-1 flex items-center gap-2 px-3 py-2 bg-red-900/20 border border-red-700/40 rounded-lg text-xs text-red-300 flex-shrink-0">
@@ -1099,7 +1259,7 @@ export default function InterviewStudio({
 
           {micMode === "push-to-talk" && (
             <div className="flex items-center justify-center gap-5">
-              <button onClick={() => askJournalist(false)} disabled={isProcessing || isJournalistSpeaking}
+              <button onClick={() => streamJournalist(false, historyRef.current)} disabled={isProcessing || isJournalistSpeaking}
                 title="Skip to next question"
                 className="p-2 rounded-lg text-studio-muted hover:text-white hover:bg-studio-card transition-colors disabled:opacity-40">
                 <SkipForward size={17} />
@@ -1126,7 +1286,7 @@ export default function InterviewStudio({
 
           {micMode === "hands-free" && (
             <div className="flex items-center justify-center gap-5">
-              <button onClick={() => askJournalist(false)} disabled={isProcessing || isJournalistSpeaking}
+              <button onClick={() => streamJournalist(false, historyRef.current)} disabled={isProcessing || isJournalistSpeaking}
                 title="Skip to next question"
                 className="p-2 rounded-lg text-studio-muted hover:text-white hover:bg-studio-card transition-colors disabled:opacity-40">
                 <SkipForward size={17} />
