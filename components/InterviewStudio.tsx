@@ -190,6 +190,23 @@ export default function InterviewStudio({
 
   useEffect(() => { return () => stopHandsFree(); }, []);
 
+  // ─── Interrupt handler ────────────────────────────────────────
+  const handleInterrupt = useCallback(() => {
+    if (interruptedRef.current) return;
+    interruptedRef.current = true;
+
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+    }
+    isJournalistSpeakingRef.current = false;
+    setIsJournalistSpeaking(false);
+    setWasInterrupted(true);
+
+    // Release lock after brief delay so VAD can pick up user speech
+    setTimeout(() => { interruptedRef.current = false; }, 800);
+  }, []);
+
   // Keyboard shortcuts (Space=PTT, Esc=interrupt, M=mute)
   useEffect(() => {
     if (phase !== "active") return;
@@ -270,22 +287,7 @@ export default function InterviewStudio({
     ambientSourceRef.current = null;
   }, []);
 
-  // ─── Interrupt handler ────────────────────────────────────────
-  const handleInterrupt = useCallback(() => {
-    if (interruptedRef.current) return;
-    interruptedRef.current = true;
 
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.currentTime = 0;
-    }
-    isJournalistSpeakingRef.current = false;
-    setIsJournalistSpeaking(false);
-    setWasInterrupted(true);
-
-    // Release lock after brief delay so VAD can pick up user speech
-    setTimeout(() => { interruptedRef.current = false; }, 800);
-  }, []);
 
   // ─── Sentence-pipelined TTS playback ─────────────────────────
   const playAudioChunk = useCallback((base64: string): Promise<void> => {
@@ -587,7 +589,7 @@ export default function InterviewStudio({
         ? "Transcription timed out. Please try again."
         : "Could not send audio. Check your connection.");
     }
-  }, [askJournalistWithHistory]);
+  }, [streamJournalist]);
 
   // ─── Push-to-talk ─────────────────────────────────────────────
   const startPTT = async () => {
