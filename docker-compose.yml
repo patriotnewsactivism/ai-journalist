@@ -1,0 +1,23 @@
+# Containerises AI Journalist Studio on the existing Caddy network.
+# There is deliberately NO database service here: this app is stateless Next.js
+# and the box already runs apex-contabo-apex-db-1. Adding a second postgres would
+# collide on the container name and give you two competing databases.
+services:
+  ai-journalist:
+    container_name: ai-journalist
+    image: aijournalist:main
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env.local
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+    networks:
+      - apex-contabo_apexnet
+    # No published ports: Caddy proxies to ai-journalist:3000 over apex-contabo_apexnet.
+
+networks:
+  apex-contabo_apexnet:
+    external: true
