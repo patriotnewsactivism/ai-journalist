@@ -11,6 +11,7 @@ import { JournalistProfile, Message, EmotionalState } from "@/agents/journalist"
 import JournalistAvatar from "./JournalistAvatar";
 import { useSessionRecorder } from "@/hooks/useSessionRecorder";
 import type { VideoJournalistHandle } from "./VideoJournalist";
+import { decideTurn, type TurnDecision } from "@/lib/cadence";
 
 const VideoJournalist = dynamic(() => import("./VideoJournalist"), { ssr: false });
 
@@ -31,6 +32,12 @@ const VAD_SPEECH_THRESHOLD = 10;
 const VAD_RESUME_DELAY_MS = 600;
 const INTERRUPT_THRESHOLD = 38; // RMS*100 needed to interrupt journalist mid-speech
 const MIN_SPEAK_BEFORE_INTERRUPT_MS = 1500; // journalist must speak ≥1.5s before interruptible
+
+// Cadence turn-taking. "hold" is right for an interview: the journalist drives,
+// so it answers a finished thought but never a trailing-off one.
+const CADENCE_MODE = "hold" as const;
+const CADENCE_HOLD_MS = 1250;
+const CADENCE_CUE_PAUSE_MS = 500;
 
 function getSupportedAudioMime(): string {
   if (typeof MediaRecorder === "undefined") return "audio/mp4";
@@ -96,6 +103,7 @@ export default function InterviewStudio({
   const [transcriptOpen, setTranscriptOpen] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [wasInterrupted, setWasInterrupted] = useState(false);
+  const [lastTurn, setLastTurn] = useState<TurnDecision | null>(null);
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [factCheckItems, setFactCheckItems] = useState<string[]>([]);
   const [showResearch, setShowResearch] = useState(false);
@@ -580,9 +588,34 @@ export default function InterviewStudio({
       if (!res.ok) { setError(`Transcription failed: ${data.error}`); return; }
       const transcript = (data.transcript || "").trim();
       if (!transcript) return;
+
+      // The interviewee's words always go into the record, even when Cadence
+      // decides the journalist should not answer them.
       const userMsg: Message = { role: "interviewee", content: transcript, timestamp: new Date() };
       const updated = [...currentHistory, userMsg];
       setHistory(updated);
+
+      const decision = decideTurn(
+        transcript,
+        {
+          mode: CADENCE_MODE,
+          silenceMs: VAD_SILENCE_MS,
+          holdMs: CADENCE_HOLD_MS,
+          cuePauseMs: CADENCE_CUE_PAUSE_MS,
+          learnedMs: 0,
+        },
+        typeof performance !== "undefined" ? performance.now() : 0,
+      );
+      setLastTurn(decision);
+
+      // Trailing off mid-thought, a side remark, or a sign-off: hold the question.
+      if (!decision.speak) return;
+
+      if (decision.waitMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, decision.waitMs));
+        if (interruptedRef.current) return;
+      }
+
       await streamJournalist(false, updated);
     } catch (err: any) {
       setError(err.name === "AbortError"
@@ -1313,10 +1346,14 @@ export default function InterviewStudio({
                       background: vadLevel > 50 ? "#cc2936" : vadLevel > 20 ? journalist.accentColor : "#252535",
                     }} />
                 </div>
-                <span className="text-[10px] text-studio-muted text-center">
+                <span
+                  className="text-[10px] text-studio-muted text-center"
+                  title={lastTurn ? lastTurn.reason : undefined}
+                >
                   {!handsFreeActive ? "Tap to start"
                     : isJournalistSpeaking ? "Speak to interrupt"
                     : vadState === "user-speaking" ? "● Speaking"
+                    : lastTurn && !lastTurn.speak ? "Held the floor"
                     : "Listening…"}
                 </span>
               </div>
