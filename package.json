@@ -9,6 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@anam-ai/js-sdk": "^4.29.3",
     "@d-id/client-sdk": "^1.0.0",
     "@google/generative-ai": "^0.15.0",
     "formidable": "^3.5.1",

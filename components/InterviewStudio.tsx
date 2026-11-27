@@ -11,9 +11,12 @@ import { JournalistProfile, Message, EmotionalState } from "@/agents/journalist"
 import JournalistAvatar from "./JournalistAvatar";
 import { useSessionRecorder } from "@/hooks/useSessionRecorder";
 import type { VideoJournalistHandle } from "./VideoJournalist";
+import type { AnamJournalistHandle } from "./AnamJournalist";
+import { ANAM_AVATARS } from "@/lib/anam";
 import { decideTurn, type TurnDecision } from "@/lib/cadence";
 
 const VideoJournalist = dynamic(() => import("./VideoJournalist"), { ssr: false });
+const AnamJournalist = dynamic(() => import("./AnamJournalist"), { ssr: false });
 
 interface Props {
   journalist: JournalistProfile;
@@ -100,6 +103,7 @@ export default function InterviewStudio({
   const [webcamEnabled, setWebcamEnabled] = useState(false);
   const [webcamStream, setWebcamStream] = useState<MediaStream | null>(null);
   const [didReady, setDidReady] = useState(false);
+  const [anamReady, setAnamReady] = useState(false);
   const [transcriptOpen, setTranscriptOpen] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [wasInterrupted, setWasInterrupted] = useState(false);
@@ -126,6 +130,7 @@ export default function InterviewStudio({
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const didRef = useRef<VideoJournalistHandle | null>(null);
+  const anamRef = useRef<AnamJournalistHandle | null>(null);
 
   // PTT refs
   const pttRecorder = useRef<MediaRecorder | null>(null);
@@ -207,6 +212,7 @@ export default function InterviewStudio({
       audioRef.current.pause();
       audioRef.current.currentTime = 0;
     }
+    anamRef.current?.interrupt();
     isJournalistSpeakingRef.current = false;
     setIsJournalistSpeaking(false);
     setWasInterrupted(true);
@@ -248,6 +254,9 @@ export default function InterviewStudio({
     `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 
   const hasDID = !!(didClientKey && didAgentId);
+  // Anam is available for Marcus Cole, Hank Vance, and Victoria Hayes —
+  // all three have Anam avatars (see lib/anam.ts).
+  const hasAnam = journalist.id in ANAM_AVATARS;
 
   // ─── Ambient newsroom audio ───────────────────────────────────
   const startAmbientAudio = useCallback(() => {
@@ -516,8 +525,16 @@ export default function InterviewStudio({
         isJournalistSpeakingRef.current = false;
       }
 
-      // D-ID video mode: speak full text
-      if (videoMode === "video" && didReady && didRef.current) {
+      // Live-video mode: speak the full text through the avatar.
+      // Anam first (Cartesia raw PCM -> face lip-sync); D-ID only as fallback.
+      if (videoMode === "video" && hasAnam && anamReady && anamRef.current) {
+        journalistSpeakStartRef.current = Date.now();
+        setIsJournalistSpeaking(true);
+        isJournalistSpeakingRef.current = true;
+        try { await anamRef.current.speak(fullText); } catch { /* ignore */ }
+        setIsJournalistSpeaking(false);
+        isJournalistSpeakingRef.current = false;
+      } else if (videoMode === "video" && didReady && didRef.current) {
         journalistSpeakStartRef.current = Date.now();
         setIsJournalistSpeaking(true);
         isJournalistSpeakingRef.current = true;
@@ -540,7 +557,7 @@ export default function InterviewStudio({
     } finally {
       setIsProcessing(false);
     }
-  }, [journalist.id, journalist.voiceId, storyTitle, storyContext, ttsEnabled, videoMode, didReady, emotionalState, playAudioChunk, fetchPostTurn]);
+  }, [journalist.id, journalist.voiceId, storyTitle, storyContext, ttsEnabled, videoMode, didReady, anamReady, hasAnam, emotionalState, playAudioChunk, fetchPostTurn]);
 
   // Suggestion click — bypass STT, send directly as user answer
   const handleSuggestionClick = useCallback(async (text: string) => {
@@ -553,7 +570,9 @@ export default function InterviewStudio({
 
   const startInterview = async () => {
     setPhase("opening");
-    if (videoMode === "video" && hasDID && didRef.current && !didReady) {
+    if (videoMode === "video" && hasAnam && anamRef.current && !anamReady) {
+      try { await anamRef.current.connect(); } catch { /* handled via onError */ }
+    } else if (videoMode === "video" && hasDID && didRef.current && !didReady) {
       try { await didRef.current.connect(); } catch { /* handled via onError */ }
     }
     // Start journalist audio recorder before the opening so it captures the first question
@@ -916,6 +935,7 @@ export default function InterviewStudio({
     if (audioRef.current) audioRef.current.pause();
     webcamStream?.getTracks().forEach(t => t.stop());
     didRef.current?.disconnect();
+    anamRef.current?.disconnect();
     const fullText = history.map(m =>
       `${m.role === "journalist" ? journalist.name : "Interviewee"}: ${m.content}`
     ).join("\n\n");
@@ -976,7 +996,7 @@ export default function InterviewStudio({
               ▸
             </button>
           )}
-          {hasDID && (
+          {(hasAnam || hasDID) && (
             <button
               onClick={() => setVideoMode(m => m === "avatar" ? "video" : "avatar")}
               className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-semibold transition-colors ${
@@ -994,6 +1014,7 @@ export default function InterviewStudio({
             onClick={() => {
               if (ttsEnabled) {
                 audioRef.current?.pause();
+                anamRef.current?.interrupt();
                 setIsJournalistSpeaking(false);
                 isJournalistSpeakingRef.current = false;
                 interruptedRef.current = true;
@@ -1046,17 +1067,30 @@ export default function InterviewStudio({
 
         {/* LEFT — Journalist */}
         <div className={`flex-1 relative bg-black overflow-hidden ${panelClass}`}>
-          {videoMode === "video" && hasDID ? (
-            <VideoJournalist
-              ref={didRef}
-              clientKey={didClientKey!}
-              agentId={didAgentId!}
-              onReady={() => setDidReady(true)}
-              onSpeakStart={() => setIsJournalistSpeaking(true)}
-              onSpeakEnd={() => setIsJournalistSpeaking(false)}
-              onError={(e) => setError(`Video journalist: ${e}`)}
-              className="w-full h-full rounded-none"
-            />
+          {videoMode === "video" && (hasAnam || hasDID) ? (
+            hasAnam ? (
+              <AnamJournalist
+                ref={anamRef}
+                journalistId={journalist.id}
+                voiceId={journalist.voiceId}
+                onReady={() => setAnamReady(true)}
+                onSpeakStart={() => setIsJournalistSpeaking(true)}
+                onSpeakEnd={() => setIsJournalistSpeaking(false)}
+                onError={(e) => setError(`Video journalist: ${e}`)}
+                className="w-full h-full rounded-none"
+              />
+            ) : (
+              <VideoJournalist
+                ref={didRef}
+                clientKey={didClientKey!}
+                agentId={didAgentId!}
+                onReady={() => setDidReady(true)}
+                onSpeakStart={() => setIsJournalistSpeaking(true)}
+                onSpeakEnd={() => setIsJournalistSpeaking(false)}
+                onError={(e) => setError(`Video journalist: ${e}`)}
+                className="w-full h-full rounded-none"
+              />
+            )
           ) : (
             <div className="w-full h-full flex items-center justify-center"
               style={{ background: `radial-gradient(ellipse at center, ${journalist.accentColor}11 0%, #0a0a0f 70%)` }}>
@@ -1100,8 +1134,11 @@ export default function InterviewStudio({
           {/* Ready overlay */}
           {phase === "ready" && (
             <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/50 backdrop-blur-[1px]">
-              {hasDID && videoMode === "video" && !didReady && (
-                <button onClick={() => didRef.current?.connect()}
+              {videoMode === "video" && ((hasAnam && !anamReady) || (hasDID && !didReady)) && (
+                <button onClick={() => {
+                  if (hasAnam) anamRef.current?.connect();
+                  else didRef.current?.connect();
+                }}
                   className="mb-4 px-5 py-2 rounded-lg text-black text-sm font-bold transition-all hover:opacity-90"
                   style={{ background: journalist.accentColor }}>
                   Connect Video Feed
